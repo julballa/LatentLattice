@@ -40,9 +40,6 @@ def eval(args, model, loader, length=None):
     """
     model.eval()
 
-    total_mse = 0
-    total_acc_residue = 0
-    total_acc_padding = 0
     total_kl_x = 0
     total_kl_h = 0
 
@@ -68,32 +65,32 @@ def eval(args, model, loader, length=None):
         batch = batch.to(device)
 
         with torch.no_grad():
-            pred_coords, pred_residue, pred_pad, kl_x, kl_h = model(batch)
+            pred_coords, pred_atom, pred_pad, kl_x, kl_h = model(batch)
 
 
         total_kl_x += kl_x
         total_kl_h += kl_h
 
         pred_coords_split = torch.split(pred_coords, length)
-        protein_mask_split = torch.split(batch.protein_mask, length)
-        for pred_coords, protein_mask in zip(pred_coords_split, protein_mask_split):
-            pred_coord.append(pred_coords[protein_mask].detach().cpu())
-            pred_dist.append((pred_coords[protein_mask][0:-1] - pred_coords[protein_mask][1:]).pow(2).sum(-1).sqrt().detach().cpu())
+        lattice_mask_split = torch.split(batch.lattice_mask, length)
+        for pred_coords, lattice_mask in zip(pred_coords_split, lattice_mask_split):
+            pred_coord.append(pred_coords[lattice_mask].detach().cpu())
+            pred_dist.append((pred_coords[lattice_mask][0:-1] - pred_coords[lattice_mask][1:]).pow(2).sum(-1).sqrt().detach().cpu())
 
-        pred_atom_type.append(pred_residue[batch.protein_mask].detach().cpu())
+        pred_atom_type.append(pred_atom[batch.lattice_mask].detach().cpu())
         pred_pad_type.append(pred_pad.detach().cpu())
 
         coords_split = torch.split(batch.coords, length)
-        for coords, protein_mask in zip(coords_split, protein_mask_split):
-            true_coord.append(coords[protein_mask].detach().cpu())
-            true_dist.append((coords[protein_mask][0:-1] - coords[protein_mask][1:]).pow(2).sum(-1).sqrt().detach().cpu())
+        for coords, lattice_mask in zip(coords_split, lattice_mask_split):
+            true_coord.append(coords[lattice_mask].detach().cpu())
+            true_dist.append((coords[lattice_mask][0:-1] - coords[lattice_mask][1:]).pow(2).sum(-1).sqrt().detach().cpu())
 
-        true_atom_type.append(batch.x[batch.protein_mask].detach().cpu())
+        true_atom_type.append(batch.x[batch.lattice_mask].detach().cpu())
         true_pad_type.append(batch.padding.detach().cpu())
 
-    # accuracy for residue type prediction
+    # accuracy for atom type prediction
     preds = torch.argmax(torch.cat(pred_atom_type, dim=0), dim=1)
-    acc_residue = torch.sum(preds == torch.cat(true_atom_type, dim=0).squeeze(1)) / preds.shape[0]
+    acc_atom = torch.sum(preds == torch.cat(true_atom_type, dim=0).squeeze(1)) / preds.shape[0]
 
     # accuracy for padding type prediction
     preds = (torch.cat(pred_pad_type, dim=0) > 0.5).to(torch.int)
@@ -111,7 +108,7 @@ def eval(args, model, loader, length=None):
     stable = np.logical_and((pred_dist.cpu().numpy() > 3.65), (pred_dist.cpu().numpy() < 3.95))
     edge_stable = stable.sum() / stable.size
 
-    return edge_mae, edge_stable, mae, rmsd, acc_residue, acc_padding, total_kl_x / (step + 1), total_kl_h / (step + 1), pred_coord, true_coord, pred_atom_type, true_atom_type, pred_pad_type, true_pad_type
+    return edge_mae, edge_stable, mae, rmsd, acc_atom, acc_padding, total_kl_x / (step + 1), total_kl_h / (step + 1), pred_coord, true_coord, pred_atom_type, true_atom_type, pred_pad_type, true_pad_type
 
 
 
@@ -147,17 +144,17 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
         batch.coords = batch.coords.double()
         batch = batch.to(device)
 
-        pred_coords, pred_residue, pred_pad, kl_x, kl_h = model(batch)
+        pred_coords, pred_atom, pred_pad, kl_x, kl_h = model(batch)
 
         assert torch.isnan(pred_coords).sum() == 0
-        assert torch.isnan(pred_residue).sum() == 0
+        assert torch.isnan(pred_atom).sum() == 0
         assert torch.isnan(pred_pad).sum() == 0
 
 
         # MAE loss
-        loss_coords = reg_criterion(pred_coords[batch.protein_mask], batch.coords[batch.protein_mask])
-        # cross entropy loss for residue type prediction
-        loss_multi_classify = multi_class_criterion(pred_residue[batch.protein_mask], batch.x[batch.protein_mask].squeeze(1).to(torch.long))
+        loss_coords = reg_criterion(pred_coords[batch.lattice_mask], batch.coords[batch.lattice_mask])
+        # cross entropy loss for atom type prediction
+        loss_multi_classify = multi_class_criterion(pred_atom[batch.lattice_mask], batch.x[batch.lattice_mask].squeeze(1).to(torch.long))
         # cross entropy loss for padding type prediction (binary type)
         loss_binary_classify = binary_class_criterion(pred_pad.float(), batch.padding.unsqueeze(1).to(torch.float))
 
@@ -165,12 +162,12 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
         edge_dist_loss = 0
         pred_coords_split = torch.split(pred_coords, length)
         coords_split = torch.split(batch.coords, length)
-        protein_mask_split = torch.split(batch.protein_mask, length)
+        lattice_mask_split = torch.split(batch.lattice_mask, length)
         count = 0
-        for pred_coords, coords, protein_mask in zip(pred_coords_split, coords_split, protein_mask_split):
+        for pred_coords, coords, lattice_mask in zip(pred_coords_split, coords_split, lattice_mask_split):
             count += 1
-            pred_dist = (pred_coords[protein_mask][0:-1] - pred_coords[protein_mask][1:]).pow(2).sum(-1).sqrt()
-            true_dist = (coords[protein_mask][0:-1] - coords[protein_mask][1:]).pow(2).sum(-1).sqrt()
+            pred_dist = (pred_coords[lattice_mask][0:-1] - pred_coords[lattice_mask][1:]).pow(2).sum(-1).sqrt()
+            true_dist = (coords[lattice_mask][0:-1] - coords[lattice_mask][1:]).pow(2).sum(-1).sqrt()
             edge_dist_loss += reg_criterion(pred_dist, true_dist)
         edge_dist_loss = edge_dist_loss / count
 
@@ -209,7 +206,7 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
 def main():
 
     # parse arguments
-    parser = argparse.ArgumentParser(description="Protein generation")
+    parser = argparse.ArgumentParser(description="Lattice generation")
 
     parser.add_argument('--debug', action='store_true', default=False, help='debug mode')
 

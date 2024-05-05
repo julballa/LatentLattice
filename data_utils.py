@@ -27,17 +27,14 @@ def lattice_to_pyg_data(lattice, positions, atom_types):
     # Get the adjacency matrix and positions
     adj_matrix = lattice.adjacency_matrix()
     
-
     # Convert to edge index format expected by PyTorch Geometric
     edge_index = adj_matrix.nonzero()
     edge_index = torch.tensor(edge_index)
 
-    # Stack atom types with positions if needed, or just use atom types
-    x = torch.cat([atom_types, positions], dim=1) 
-
     # Create a PyTorch Geometric data object
-    data = Data(x=x, edge_index=edge_index)
+    data = Data(x=atom_types, coords=positions, edge_index=edge_index)
     return data
+
 
 def plot_lattice(latt, positions, atom_types):
     # Plot the lattice with atom type color mapping
@@ -58,22 +55,16 @@ def create_dataset(num_lattices, shape, num_atom_types=2, save_dir=None):
     for i in range(num_lattices):
         # Initialize and build the lattice
         latt = simple_square()
-        latt.build(shape=shape)
-
-        # Generate indices for getting positions
-        indices = np.indices(shape).reshape(2, -1).T
-        indices = np.hstack((indices, np.zeros((indices.shape[0], 1), dtype=int)))  # alpha = zero
-
-        # Get positions for these indices
-        positions = torch.tensor(latt.get_positions(indices))
+        # Subtract 1 from each shape dim because build() has inclusive boundaries
+        latt.build(shape=tuple([s-1 for s in shape]))
+    
+        positions = torch.tensor(latt.positions)
 
         # Generate random atom types for each node
-        atom_types = torch.randint(0, 2, size=(np.prod(shape),))  # Two atom types: 0 and 1
-        atom_types = torch.nn.functional.one_hot(atom_types, num_classes=2)
+        atom_types = torch.randint(0, num_atom_types, size=(np.prod(shape), 1))  
+        # atom_types = torch.nn.functional.one_hot(atom_types, num_classes=2) # optional one-hot encoding
 
         pyg_latt = lattice_to_pyg_data(latt, positions, atom_types)
-
-        # Store the lattice and the atom types
         dataset.append(pyg_latt)
 
     # Save the lattice and atom types to a file

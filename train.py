@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 
 from tqdm import tqdm
 
-from model import ProAuto
+from model import LatticeAuto
 from utils import RMSD, KabschRMSD
 import re
 # from analyze_plot import analyze, get_ground_truth, get_reconstructed, plot_histogram
@@ -232,14 +232,14 @@ def main():
     parser.add_argument("--kl_weight", type=float, default=0, help="weight for kl divergence loss")
 
     # data
-    parser.add_argument("--dataname", type=str, default="EC_data_256", help="data")
+    parser.add_argument("--dataname", type=str, default="2d_square_lattice", help="data")
     parser.add_argument("--num_workers", type=int, default=0, help="num of data loader workers")
-    parser.add_argument("--data_path", type=str, default="../data/", help="path to data")
+    parser.add_argument("--data_path", type=str, default="data/", help="path to data")
 
     # directory
-    parser.add_argument("--working_dir", type=str, default="../", help="working directory for logs, saved models, etc.")
+    parser.add_argument("--working_dir", type=str, default="", help="working directory for logs, saved models, etc.")
     parser.add_argument("--suffix", type=str, default="", help="optional suffix added to working_dir")
-    parser.add_argument("--log_dir", type=str, default="../log", help="tensorboard log directory")
+    parser.add_argument("--log_dir", type=str, default="", help="tensorboard log directory")
     parser.add_argument("--checkpoint_dir", type=str, default="trained_models", help="directory to save checkpoint in working directory")
     parser.add_argument("--saved_model_dir", type=str, default=None, help="directory with checkpoint.pt")
 
@@ -289,10 +289,8 @@ def main():
 
     # load data
     if args.dataname == "2d_square_lattice":
-
-        # train_set = torch.load(os.path.join(args.data_path, 'AFPDB_data_128_Train_complete.pt')) if args.mode == 'train' else None
-        # valid_set = torch.load(os.path.join(args.data_path, 'PDB_data_128_Val_complete.pt'))
-        raise NotImplementedError
+        train_set = torch.load(os.path.join(args.data_path, 'lattice_16x16_n=1000_types=2.pt')) if args.mode == 'train' else None
+        valid_set = torch.load(os.path.join(args.data_path, 'lattice_16x16_n=200_types=2.pt'))
     else:
         ValueError("Invalid dataname!")
 
@@ -304,7 +302,7 @@ def main():
     valid_loader = DataLoader(valid_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     # init model; display the number of parameters
-    model = ProAuto(**params).double()
+    model = LatticeAuto(**params).double()
 
     print(f"Training with {torch.cuda.device_count()} GPUs!")
     model = model.to(device)
@@ -322,7 +320,6 @@ def main():
         log_dir = os.path.join(args.log_dir, cur_time + args.suffix)
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
-        # writer = SummaryWriter(log_dir=log_dir)
 
     best_valid_rmsd = 1000
     best_res_acc = 0
@@ -353,22 +350,6 @@ def main():
 
             print("Epoch {:d}, valid_edge_mae: {:.5f}, edge_stable: {:.5f}, Train_mae: {:.5f}, Validation_mae: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}, pad_acc: {:.2f}, kl_x: {:.2f}, kl_h: {:.2f}, elapse: {:.5f}".
                   format(epoch, valid_edge_mae, edge_stable, train_mae, valid_mae, rmsd, res_acc, pad_acc, kl_x, kl_h, time.time() - start))
-
-            if args.log_dir != '':
-                writer.add_scalar('valid/edge_mae', valid_edge_mae, epoch)
-                writer.add_scalar('valid/edge_stable', edge_stable, epoch)
-                writer.add_scalar('valid/mae', valid_mae, epoch)
-                writer.add_scalar('valid/acc_res', res_acc, epoch)
-                writer.add_scalar('valid/acc_pad', pad_acc, epoch)
-                writer.add_scalar('valid/rmsd', rmsd, epoch)
-                writer.add_scalar('valid/kl_x', kl_x, epoch)
-                writer.add_scalar('valid/kl_h', kl_h, epoch)
-                writer.add_scalar('train/mae', train_mae, epoch)
-                writer.add_scalar('train/loss_res', res_loss, epoch)
-                writer.add_scalar('train/loss_pad', pad_loss, epoch)
-                writer.add_scalar('train/kl_x', train_kl_x, epoch)
-                writer.add_scalar('train/kl_h', train_kl_h, epoch)
-                writer.add_scalar('train/edge_mae', train_edge_mae, epoch)
 
             if rmsd < best_valid_rmsd:
                 best_valid_rmsd = rmsd

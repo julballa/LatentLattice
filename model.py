@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import torch_geometric
 
-from egnn_pytorch import EGNN
+from EGNN import EGNN
 
 import torch.nn.functional as F
 import torch.nn as nn
@@ -77,9 +77,11 @@ class EGNNPooling(torch.nn.Module):
         self.kernel = kernel
         self.padding = padding
 
-        self.egnn = EGNN(hidden_dim, edge_dim=hidden_dim,
-                                     m_dim=hidden_dim,
-                                     soft_edges=attn)
+        # self.egnn = EGNN(hidden_dim, edge_dim=hidden_dim,
+        #                              m_dim=hidden_dim,
+        #                              soft_edges=attn)
+        self.egnn = EGNN(in_node_nf=hidden_dim, hidden_nf=hidden_dim, out_node_nf=hidden_dim, in_edge_nf=hidden_dim,
+                         attention=attn, reflection_equiv=True)
 
         self.edge_mlp = MLP(hidden_dim * 2, hidden_dim, hidden_dim, F.relu)
         self.edge_mlp_after_pooling = MLP(hidden_dim * 2, hidden_dim, hidden_dim, F.relu)
@@ -91,6 +93,7 @@ class EGNNPooling(torch.nn.Module):
     def forward(self, h, coords, batch=None, batched_data=None, edge_index=None):
 
         ## get initial h and coords for pooling node
+        coords_dim = coords.shape[-1]
 
         # get number of node in one input graph and number of pooling node
         num_node = int(torch.div(h.shape[0], (batch[-1] + 1), rounding_mode='floor'))
@@ -135,7 +138,7 @@ class EGNNPooling(torch.nn.Module):
         # perform egnn
         data = Batch.from_data_list(datalist).to(device)
         h = h.view(-1, self.hidden_dim)
-        coords = coords.view(-1, 3)
+        coords = coords.view(-1, coords_dim)
         row, col = data.edge_index
         out = torch.cat([h[row], h[col]], dim=1)
         edge_attr = self.edge_mlp(out)
@@ -165,9 +168,12 @@ class EGNNUnPooling(torch.nn.Module):
         self.output_padding = output_padding
 
 
-        self.egnn = EGNN(hidden_dim, edge_dim=hidden_dim,
-                                     m_dim=hidden_dim,
-                                     soft_edges=attn)
+        # self.egnn = EGNN(hidden_dim, edge_dim=hidden_dim,
+        #                              m_dim=hidden_dim,
+        #                              soft_edges=attn)
+        self.egnn = EGNN(in_node_nf=hidden_dim, hidden_nf=hidden_dim, out_node_nf=hidden_dim, in_edge_nf=hidden_dim,
+                         attention=attn, reflection_equiv=True)
+
 
 
         self.edge_mlp = MLP(hidden_dim * 2, hidden_dim, hidden_dim, F.relu)
@@ -178,6 +184,8 @@ class EGNNUnPooling(torch.nn.Module):
         self.bn_edge_after_pooling = LayerNorm(in_channels=hidden_dim, mode="node")
 
     def forward(self, h, coords, batch=None, batched_data=None, edge_index=None):
+
+        coords_dim = coords.shape[-1]
 
         # initialize coords for pooling node
         num_node = int(torch.div(h.shape[0], (batch[-1] + 1), rounding_mode='floor'))
@@ -233,7 +241,7 @@ class EGNNUnPooling(torch.nn.Module):
         data = Batch.from_data_list(datalist).to(device)
 
         h = h.view(-1, self.hidden_dim)
-        coords = coords.view(-1, 3)
+        coords = coords.view(-1, coords_dim) #coords.view(-1, 3)
         row, col = data.edge_index
         out = torch.cat([h[row], h[col]], dim=1)
         edge_attr = self.edge_mlp(out)

@@ -355,8 +355,6 @@ class LatticeAuto(torch.nn.Module):
 
         self.bn_edge = LayerNorm(in_channels=hidden_dim, mode="node")
 
-        self.mlp_padding = MLP(hidden_dim, hidden_dim, output_pad_dim, F.relu)
-
         self.mlp_atom = MLP(hidden_dim, hidden_dim * 4, type_dim, F.relu)
 
         self.sigmoid = nn.Sigmoid()
@@ -403,10 +401,7 @@ class LatticeAuto(torch.nn.Module):
         else:
             coords_pred, h, batched_data = self.encoder(coords, h, edge_index, batch, batched_data)
 
-        # predict padding
-        pad_pred = self.sigmoid(self.mlp_padding(h))
-
         # predict atom type
         atom_pred = self.mlp_atom(h)
 
-        return coords_pred, atom_pred, pad_pred, self.kl_x, self.kl_h
+        return coords_pred, atom_pred, self.kl_x, self.kl_h

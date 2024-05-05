@@ -46,12 +46,10 @@ def eval(args, model, loader, length=None):
     pred_dist = []
     pred_coord = []
     pred_atom_type = []
-    pred_pad_type = []
 
     true_dist = []
     true_coord = []
     true_atom_type = []
-    true_pad_type = []
 
     count = 0
 
@@ -65,36 +63,29 @@ def eval(args, model, loader, length=None):
         batch = batch.to(device)
 
         with torch.no_grad():
-            pred_coords, pred_atom, pred_pad, kl_x, kl_h = model(batch)
+            pred_coords, pred_atom, kl_x, kl_h = model(batch)
 
 
         total_kl_x += kl_x
         total_kl_h += kl_h
 
         pred_coords_split = torch.split(pred_coords, length)
-        lattice_mask_split = torch.split(batch.lattice_mask, length)
-        for pred_coords, lattice_mask in zip(pred_coords_split, lattice_mask_split):
-            pred_coord.append(pred_coords[lattice_mask].detach().cpu())
-            pred_dist.append((pred_coords[lattice_mask][0:-1] - pred_coords[lattice_mask][1:]).pow(2).sum(-1).sqrt().detach().cpu())
+        for pred_coords in pred_coords_split:
+            pred_coord.append(pred_coords.detach().cpu())
+            pred_dist.append((pred_coords[0:-1] - pred_coords[1:]).pow(2).sum(-1).sqrt().detach().cpu())
 
-        pred_atom_type.append(pred_atom[batch.lattice_mask].detach().cpu())
-        pred_pad_type.append(pred_pad.detach().cpu())
+        pred_atom_type.append(pred_atom.detach().cpu())
 
         coords_split = torch.split(batch.coords, length)
-        for coords, lattice_mask in zip(coords_split, lattice_mask_split):
-            true_coord.append(coords[lattice_mask].detach().cpu())
-            true_dist.append((coords[lattice_mask][0:-1] - coords[lattice_mask][1:]).pow(2).sum(-1).sqrt().detach().cpu())
+        for coords in coords_split:
+            true_coord.append(coords.detach().cpu())
+            true_dist.append((coords[0:-1] - coords[1:]).pow(2).sum(-1).sqrt().detach().cpu())
 
-        true_atom_type.append(batch.x[batch.lattice_mask].detach().cpu())
-        true_pad_type.append(batch.padding.detach().cpu())
+        true_atom_type.append(batch.x.detach().cpu())
 
     # accuracy for atom type prediction
     preds = torch.argmax(torch.cat(pred_atom_type, dim=0), dim=1)
     acc_atom = torch.sum(preds == torch.cat(true_atom_type, dim=0).squeeze(1)) / preds.shape[0]
-
-    # accuracy for padding type prediction
-    preds = (torch.cat(pred_pad_type, dim=0) > 0.5).to(torch.int)
-    acc_padding = torch.sum(preds.squeeze(1) == torch.cat(true_pad_type, dim=0)) / preds.shape[0]
 
     # MAE for atom position reconstruction
     mae = reg_criterion(torch.cat(pred_coord, dim=0), torch.cat(true_coord, dim=0))
@@ -108,7 +99,7 @@ def eval(args, model, loader, length=None):
     stable = np.logical_and((pred_dist.cpu().numpy() > 3.65), (pred_dist.cpu().numpy() < 3.95))
     edge_stable = stable.sum() / stable.size
 
-    return edge_mae, edge_stable, mae, rmsd, acc_atom, acc_padding, total_kl_x / (step + 1), total_kl_h / (step + 1), pred_coord, true_coord, pred_atom_type, true_atom_type, pred_pad_type, true_pad_type
+    return edge_mae, edge_stable, mae, rmsd, acc_atom, total_kl_x / (step + 1), total_kl_h / (step + 1), pred_coord, true_coord, pred_atom_type, true_atom_type, 
 
 
 
@@ -128,7 +119,6 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
     total_loss = 0
     total_mae = 0
     total_res_loss = 0
-    total_pad_loss = 0
     total_edge_mae = 0
     total_kl_x = 0
     total_kl_h = 0
@@ -144,34 +134,30 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
         batch.coords = batch.coords.double()
         batch = batch.to(device)
 
-        pred_coords, pred_atom, pred_pad, kl_x, kl_h = model(batch)
+        pred_coords, pred_atom, kl_x, kl_h = model(batch)
 
         assert torch.isnan(pred_coords).sum() == 0
         assert torch.isnan(pred_atom).sum() == 0
-        assert torch.isnan(pred_pad).sum() == 0
 
 
         # MAE loss
-        loss_coords = reg_criterion(pred_coords[batch.lattice_mask], batch.coords[batch.lattice_mask])
+        loss_coords = reg_criterion(pred_coords, batch.coords)
         # cross entropy loss for atom type prediction
-        loss_multi_classify = multi_class_criterion(pred_atom[batch.lattice_mask], batch.x[batch.lattice_mask].squeeze(1).to(torch.long))
-        # cross entropy loss for padding type prediction (binary type)
-        loss_binary_classify = binary_class_criterion(pred_pad.float(), batch.padding.unsqueeze(1).to(torch.float))
-
+        loss_multi_classify = multi_class_criterion(pred_atom, batch.x.squeeze(1).to(torch.long))
+      
         # edge distance loss
         edge_dist_loss = 0
         pred_coords_split = torch.split(pred_coords, length)
         coords_split = torch.split(batch.coords, length)
-        lattice_mask_split = torch.split(batch.lattice_mask, length)
         count = 0
-        for pred_coords, coords, lattice_mask in zip(pred_coords_split, coords_split, lattice_mask_split):
+        for pred_coords, coords in zip(pred_coords_split, coords_split):
             count += 1
-            pred_dist = (pred_coords[lattice_mask][0:-1] - pred_coords[lattice_mask][1:]).pow(2).sum(-1).sqrt()
-            true_dist = (coords[lattice_mask][0:-1] - coords[lattice_mask][1:]).pow(2).sum(-1).sqrt()
+            pred_dist = (pred_coords[0:-1] - pred_coords[1:]).pow(2).sum(-1).sqrt()
+            true_dist = (coords[0:-1] - coords[1:]).pow(2).sum(-1).sqrt()
             edge_dist_loss += reg_criterion(pred_dist, true_dist)
         edge_dist_loss = edge_dist_loss / count
 
-        loss = loss_coords + loss_multi_classify + loss_binary_classify + 0.1 * kl_x + kl_weight * kl_h + edgeloss_weight * edge_dist_loss 
+        loss = loss_coords + loss_multi_classify + 0.1 * kl_x + kl_weight * kl_h + edgeloss_weight * edge_dist_loss 
 
         # reset accumlated gradient from previous backprop and back prop
         optimizer.zero_grad()
@@ -181,15 +167,13 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
         # append description for tqdm progress bar
         t.set_description(f"loss_dist {edge_dist_loss:.3f}, "
                           f"loss_coords {loss_coords:.3f}, "
-                          f"loss_res {loss_multi_classify:.3f}, "
-                          f"loss_pad {loss_binary_classify:.3f}, ")
+                          f"loss_res {loss_multi_classify:.3f}, ")
 
 
         optimizer.step()
 
         total_loss += loss.detach().cpu()
         total_mae += loss_coords.detach().cpu()
-        total_pad_loss += loss_binary_classify.detach().cpu()
         total_res_loss += loss_multi_classify.detach().cpu()
         total_edge_mae += edge_dist_loss.detach().cpu()
 
@@ -199,7 +183,7 @@ def train(args, model, loader, optimizer, working_dir, loss_term='all', length=N
             total_kl_h += kl_h.detach().cpu()
 
     # return the mean loss across all minibatches
-    return total_loss / (step + 1), total_mae / (step + 1), total_res_loss / (step + 1), total_pad_loss / (step + 1), \
+    return total_loss / (step + 1), total_mae / (step + 1), total_res_loss / (step + 1), \
            total_edge_mae / (step + 1), total_kl_x / (step + 1), total_kl_h / (step + 1)
 
     
@@ -288,14 +272,14 @@ def main():
     }
 
     # load data
-    if args.dataname == "2d_square_lattice":
-        train_set = torch.load(os.path.join(args.data_path, 'lattice_16x16_n=1000_types=2.pt')) if args.mode == 'train' else None
-        valid_set = torch.load(os.path.join(args.data_path, 'lattice_16x16_n=200_types=2.pt'))
+    if args.dataname in ["6x6", "8x8", "12x12", "16x16"]:
+        train_set = torch.load(os.path.join(args.data_path, f'lattice_{args.dataname}_n=1000_types=2.pt')) if args.mode == 'train' else None
+        valid_set = torch.load(os.path.join(args.data_path, f'lattice_{args.dataname}_n=200_types=2.pt'))
     else:
         ValueError("Invalid dataname!")
 
 
-    length = int(re.findall(r"([0-9]+)", args.dataname)[0])
+    length = int(args.dataname[0]) * int(args.dataname[-1])
 
     # initialize data loader
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers) if args.mode == 'train' else None
@@ -334,22 +318,22 @@ def main():
             start = time.time()
             print("=====Epoch {}".format(epoch))
             print('Training...')
-            total_loss, train_mae, res_loss, pad_loss, train_edge_mae, train_kl_x, train_kl_h = train(args, 
-                                                                                                        model,
-                                                                                                        train_loader,
-                                                                                                        optimizer,
-                                                                                                        args.working_dir,
-                                                                                                        args.loss,
-                                                                                                        length,
-                                                                                                        edgeloss_weight=args.edgeloss_weight,
-                                                                                                        kl_weight=args.kl_weight)
+            total_loss, train_mae, res_loss, train_edge_mae, train_kl_x, train_kl_h = train(args, 
+                                                                                            model,
+                                                                                            train_loader,
+                                                                                            optimizer,
+                                                                                            args.working_dir,
+                                                                                            args.loss,
+                                                                                            length,
+                                                                                            edgeloss_weight=args.edgeloss_weight,
+                                                                                            kl_weight=args.kl_weight)
 
             print('Evaluating...')
-            valid_edge_mae, edge_stable, valid_mae, rmsd, res_acc, pad_acc, kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type, pred_pad_type, true_pad_type = eval(args, model, valid_loader, length)
+            valid_edge_mae, edge_stable, valid_mae, rmsd, res_acc, kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type = eval(args, model, valid_loader, length)
 
 
-            print("Epoch {:d}, valid_edge_mae: {:.5f}, edge_stable: {:.5f}, Train_mae: {:.5f}, Validation_mae: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}, pad_acc: {:.2f}, kl_x: {:.2f}, kl_h: {:.2f}, elapse: {:.5f}".
-                  format(epoch, valid_edge_mae, edge_stable, train_mae, valid_mae, rmsd, res_acc, pad_acc, kl_x, kl_h, time.time() - start))
+            print("Epoch {:d}, valid_edge_mae: {:.5f}, edge_stable: {:.5f}, Train_mae: {:.5f}, Validation_mae: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}, kl_x: {:.2f}, kl_h: {:.2f}, elapse: {:.5f}".
+                  format(epoch, valid_edge_mae, edge_stable, train_mae, valid_mae, rmsd, res_acc, kl_x, kl_h, time.time() - start))
 
             if rmsd < best_valid_rmsd:
                 best_valid_rmsd = rmsd
@@ -358,7 +342,7 @@ def main():
                     print('Saving checkpoint...')
                     checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                                   'scheduler_state_dict': scheduler.state_dict(), 'num_params': num_params,
-                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'pad_acc': pad_acc, 'edge_stable': edge_stable}
+                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'edge_stable': edge_stable}
                     checkpoint_dir = os.path.join(args.working_dir, args.checkpoint_dir)
                     if not os.path.exists(checkpoint_dir):
                         os.makedirs(checkpoint_dir)
@@ -376,7 +360,7 @@ def main():
                     print('Saving checkpoint...')
                     checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                                   'scheduler_state_dict': scheduler.state_dict(), 'num_params': num_params,
-                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'pad_acc': pad_acc, 'edge_stable': edge_stable}
+                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'edge_stable': edge_stable}
                     checkpoint_dir = os.path.join(args.working_dir, args.checkpoint_dir)
                     if not os.path.exists(checkpoint_dir):
                         os.makedirs(checkpoint_dir)
@@ -389,7 +373,7 @@ def main():
                     print('Saving checkpoint...')
                     checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                                   'scheduler_state_dict': scheduler.state_dict(), 'num_params': num_params,
-                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'pad_acc': pad_acc, 'edge_stable': edge_stable}
+                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc,  'edge_stable': edge_stable}
                     checkpoint_dir = os.path.join(args.working_dir, args.checkpoint_dir)
                     if not os.path.exists(checkpoint_dir):
                         os.makedirs(checkpoint_dir)
@@ -408,9 +392,9 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         model = model.double()
         print('Evaluating on validation dataset...')
-        valid_edge_mae, edge_stable, valid_mae, rmsd, res_acc, pad_acc, kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type, pred_pad_type, true_pad_type = eval(args, model, valid_loader, length)
-        print("Validation_edge_stable: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}, pad_acc: {:.2f}".
-            format(edge_stable, rmsd, res_acc, pad_acc))
+        valid_edge_mae, edge_stable, valid_mae, rmsd, res_acc,kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type = eval(args, model, valid_loader, length)
+        print("Validation_edge_stable: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}".
+            format(edge_stable, rmsd, res_acc))
         
 
 if __name__ == "__main__":

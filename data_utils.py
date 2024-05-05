@@ -32,7 +32,7 @@ def lattice_to_pyg_data(lattice, positions, atom_types):
     edge_index = torch.tensor(edge_index)
 
     # Create a PyTorch Geometric data object
-    data = Data(x=atom_types, coords=positions, edge_index=edge_index)
+    data = Data(x=atom_types, coords=positions, edge_index=edge_index, num_nodes=x.shape[0])
     return data
 
 

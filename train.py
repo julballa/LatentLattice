@@ -69,6 +69,7 @@ def eval(args, model, loader, length=None):
         total_kl_x += kl_x
         total_kl_h += kl_h
 
+        print(pred_coords.shape, pred_atom.shape)
         pred_coords_split = torch.split(pred_coords, length)
         for pred_coords in pred_coords_split:
             pred_coord.append(pred_coords.detach().cpu())
@@ -96,10 +97,8 @@ def eval(args, model, loader, length=None):
     # MAE for edge distance
     edge_mae = reg_criterion(torch.cat(pred_dist, dim=0), torch.cat(true_dist, dim=0))
     pred_dist = torch.cat(pred_dist, dim=0)
-    stable = np.logical_and((pred_dist.cpu().numpy() > 3.65), (pred_dist.cpu().numpy() < 3.95))
-    edge_stable = stable.sum() / stable.size
 
-    return edge_mae, edge_stable, mae, rmsd, acc_atom, total_kl_x / (step + 1), total_kl_h / (step + 1), pred_coord, true_coord, pred_atom_type, true_atom_type, 
+    return edge_mae, mae, rmsd, acc_atom, total_kl_x / (step + 1), total_kl_h / (step + 1), pred_coord, true_coord, pred_atom_type, true_atom_type
 
 
 
@@ -272,14 +271,10 @@ def main():
     }
 
     # load data
-    if args.dataname in ["6x6", "8x8", "12x12", "16x16"]:
-        train_set = torch.load(os.path.join(args.data_path, f'lattice_{args.dataname}_n=1000_types=2.pt')) if args.mode == 'train' else None
-        valid_set = torch.load(os.path.join(args.data_path, f'lattice_{args.dataname}_n=200_types=2.pt'))
-    else:
-        ValueError("Invalid dataname!")
-
-
-    length = int(args.dataname[0]) * int(args.dataname[-1])
+    train_set = torch.load(os.path.join(args.data_path, 'lattice_12x12_n=1000_types=2.pt')) if args.mode == 'train' else None
+    valid_set = torch.load(os.path.join(args.data_path, 'lattice_12x12_n=200_types=2.pt'))
+  
+    length = 144
 
     # initialize data loader
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers) if args.mode == 'train' else None
@@ -307,10 +302,8 @@ def main():
 
     best_valid_rmsd = 1000
     best_res_acc = 0
-    best_edge_stable = 0
     best_valid_rmsd_epoch = 0
     best_res_acc_epoch = 0
-    best_edge_stable_epoch = 0
 
     if args.mode == 'train':
 
@@ -329,11 +322,11 @@ def main():
                                                                                             kl_weight=args.kl_weight)
 
             print('Evaluating...')
-            valid_edge_mae, edge_stable, valid_mae, rmsd, res_acc, kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type = eval(args, model, valid_loader, length)
+            valid_edge_mae, valid_mae, rmsd, res_acc, kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type = eval(args, model, valid_loader, length)
 
 
-            print("Epoch {:d}, valid_edge_mae: {:.5f}, edge_stable: {:.5f}, Train_mae: {:.5f}, Validation_mae: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}, kl_x: {:.2f}, kl_h: {:.2f}, elapse: {:.5f}".
-                  format(epoch, valid_edge_mae, edge_stable, train_mae, valid_mae, rmsd, res_acc, kl_x, kl_h, time.time() - start))
+            print("Epoch {:d}, valid_edge_mae: {:.5f}, Train_mae: {:.5f}, Validation_mae: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}, kl_x: {:.2f}, kl_h: {:.2f}, elapse: {:.5f}".
+                  format(epoch, valid_edge_mae, train_mae, valid_mae, rmsd, res_acc, kl_x, kl_h, time.time() - start))
 
             if rmsd < best_valid_rmsd:
                 best_valid_rmsd = rmsd
@@ -342,7 +335,7 @@ def main():
                     print('Saving checkpoint...')
                     checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                                   'scheduler_state_dict': scheduler.state_dict(), 'num_params': num_params,
-                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'edge_stable': edge_stable}
+                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc}
                     checkpoint_dir = os.path.join(args.working_dir, args.checkpoint_dir)
                     if not os.path.exists(checkpoint_dir):
                         os.makedirs(checkpoint_dir)
@@ -360,30 +353,16 @@ def main():
                     print('Saving checkpoint...')
                     checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                                   'scheduler_state_dict': scheduler.state_dict(), 'num_params': num_params,
-                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc, 'edge_stable': edge_stable}
+                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc}
                     checkpoint_dir = os.path.join(args.working_dir, args.checkpoint_dir)
                     if not os.path.exists(checkpoint_dir):
                         os.makedirs(checkpoint_dir)
                     torch.save(checkpoint, os.path.join(checkpoint_dir, 'checkpoint_bst_rec_acc.pt'))
 
-            if edge_stable > best_edge_stable:
-                best_edge_stable = edge_stable
-                best_edge_stable_epoch = epoch
-                if args.checkpoint_dir != '':
-                    print('Saving checkpoint...')
-                    checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
-                                  'scheduler_state_dict': scheduler.state_dict(), 'num_params': num_params,
-                                  'mae': valid_mae, 'rmsd': rmsd, 'res_acc': res_acc,  'edge_stable': edge_stable}
-                    checkpoint_dir = os.path.join(args.working_dir, args.checkpoint_dir)
-                    if not os.path.exists(checkpoint_dir):
-                        os.makedirs(checkpoint_dir)
-                    torch.save(checkpoint, os.path.join(checkpoint_dir, 'checkpoint_bst_edge_stable.pt'))
-
 
             scheduler.step()
             print(f'Best validation RMSD so far: {best_valid_rmsd}, epoch: {best_valid_rmsd_epoch}')
             print(f'Best validation rec acc so far: {best_res_acc}, epoch: {best_res_acc_epoch}')
-            print(f'Best validation edge stable so far: {best_edge_stable}, epoch: {best_edge_stable_epoch}')
 
     elif args.mode == 'valid':
         print("Loading checkpoint ...")
@@ -392,9 +371,9 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         model = model.double()
         print('Evaluating on validation dataset...')
-        valid_edge_mae, edge_stable, valid_mae, rmsd, res_acc,kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type = eval(args, model, valid_loader, length)
-        print("Validation_edge_stable: {:.5f}, Validation_rmsd: {:.5f}, res_acc: {:.2f}".
-            format(edge_stable, rmsd, res_acc))
+        valid_edge_mae, valid_mae, rmsd, res_acc,kl_x, kl_h, pred_coord, true_coord, pred_atom_type, true_atom_type = eval(args, model, valid_loader, length)
+        print("Validation_rmsd: {:.5f}, res_acc: {:.2f}".
+            format(rmsd, res_acc))
         
 
 if __name__ == "__main__":

@@ -95,6 +95,8 @@ class EGNNPooling(torch.nn.Module):
         ## get initial h and coords for pooling node
         coords_dim = coords.shape[-1]
 
+        torch.save(coords, 'coords_init.pt')
+
         # get number of node in one input graph and number of pooling node
         num_node = int(torch.div(h.shape[0], (batch[-1] + 1), rounding_mode='floor'))
         num_pool_node = int(torch.div(num_node + 2 * self.padding - self.kernel, self.stride, rounding_mode='floor')) + 1
@@ -133,6 +135,8 @@ class EGNNPooling(torch.nn.Module):
         datalist = []
         for i in range(batch[-1] + 1):
             datalist.append(Data(edge_index=edge_index_unbatch[i]))
+
+        torch.save(coords, 'coords.pt')
 
 
         # perform egnn
@@ -200,7 +204,7 @@ class EGNNUnPooling(torch.nn.Module):
         h = h.view((batch[-1] + 1), num_node, -1) # B x n x F
         coords = coords.view((batch[-1] + 1), num_node, -1)  # B x n x 3
 
-        ##### add same position and h on boundry, add average position and h in between #####
+        # ##### add same position and h on boundry, add average position and h in between #####
         avg = torch.stack([coords[:, 0:-1, :], coords[:, 1:, :]], dim=2).mean(dim=2) # B x (n-1) x 3
         tmp = torch.stack([coords[:, 0:-1, :], avg], dim=2) # B x (n-1) x 2 x 3
         tmp = torch.flatten(tmp, start_dim=1, end_dim=2) # B x 2*(n-1) x 3
@@ -214,6 +218,18 @@ class EGNNUnPooling(torch.nn.Module):
         h = torch.cat([h[:, 0:1, :],
                        tmp,
                        h[:, -1:, :].repeat(1,3,1)], dim=1)
+
+        # # # Create interpolated nodes
+        # h_interpolated = (h[:, edge_index[0], :] + h[:, edge_index[1], :]) / 2
+        # coords_interpolated = (coords[:, edge_index[0], :] + coords[:, edge_index[1], :]) / 2
+
+        # # Concatenate original and interpolated nodes to form augmented feature sets
+        # h_aug = torch.cat([h, h_interpolated], dim=1)
+        # coords_aug = torch.cat([coords, coords_interpolated], dim=1)
+
+        # # Reshape to match expected size by M
+        # h = h_aug.view(-1, h_aug.shape[2])  # Flatten for matrix multiplication
+        # coords = coords_aug.view(-1, coords_aug.shape[2])
 
         assert h.shape[1] == M.shape[1]
 
@@ -285,7 +301,6 @@ class Encoder(torch.nn.Module):
             self.bn_edge = LayerNorm(in_channels=hidden_dim, mode="node")
 
     def forward(self, coords, h, edge_index, batch, batched_data):
-
         # EGNN
         for i in range(self.layers):
 
@@ -326,7 +341,7 @@ class DecoderTranspose(torch.nn.Module):
 
         for i in range(self.layers):
             # unpooling
-            h, coords = self.unpooling[i](h, coords, batch)
+            h, coords = self.unpooling[i](h, coords, batch, edge_index=edge_index)
             h = self.bn[i](h)
 
         return coords, h
@@ -387,16 +402,17 @@ class LatticeAuto(torch.nn.Module):
             # encoder
             emb_coords, emb_h, batched_data, edge_index = self.encoder(coords, h, edge_index, batch, batched_data)
 
-            mu_h = self.mlp_mu_h(emb_h)
-            sigma_h = self.mlp_sigma_h(emb_h)
+            # mu_h = self.mlp_mu_h(emb_h)
+            # sigma_h = self.mlp_sigma_h(emb_h)
 
-            z_h = mu_h + torch.exp(sigma_h / 2) * self.N.sample(mu_h.shape)
-            self.kl_h = -0.5 * (1 + sigma_h - mu_h ** 2 - torch.exp(sigma_h)).sum() / (batch[-1] + 1)
+            # z_h = mu_h + torch.exp(sigma_h / 2) * self.N.sample(mu_h.shape)
+            # self.kl_h = -0.5 * (1 + sigma_h - mu_h ** 2 - torch.exp(sigma_h)).sum() / (batch[-1] + 1)
 
-            assert z_h.shape == emb_h.shape
+            # assert z_h.shape == emb_h.shape
 
             # decoder
-            coords_pred, h = self.decoder(emb_coords, z_h, batched_data.batch, batched_data)
+            # coords_pred, h = self.decoder(emb_coords, z_h, batched_data.batch, batched_data, edge_index=edge_index)
+            coords_pred, h = self.decoder(emb_coords, emb_h, batched_data.batch, batched_data, edge_index=edge_index)
 
         else:
             coords_pred, h, batched_data = self.encoder(coords, h, edge_index, batch, batched_data)

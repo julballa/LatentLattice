@@ -1,3 +1,5 @@
+# Adapted from https://github.com/divelab/AIRS/blob/main/OpenProt/LatentDiff/LatentDiff/protein_autoencoder/main.py
+
 import os
 import sys
 import time
